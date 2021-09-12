@@ -13,6 +13,7 @@ import yaml
 import os
 import logging
 from pathlib import Path
+import cv2
 
 import numpy as np
 from imageio import imread
@@ -65,6 +66,101 @@ def combine_heatmap(heatmap, inv_homographies, mask_2D, device="cpu"):
 
 
 #### end util functions
+
+
+def inference_superpoint(config, output_dir, args):
+    from utils.loader import get_save_path
+    from utils.var_dim import squeezeToNumpy
+
+    # basic settings
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    logging.info("train on device: %s", device)
+    # with open(os.path.join(output_dir, "config.yml"), "w") as f:
+        # yaml.dump(config, f, default_flow_style=False)
+    # writer = SummaryWriter(getWriterPath(task=args.command, date=True))
+    save_path = get_save_path(output_dir)
+    save_output = save_path / "../predictions"
+    os.makedirs(save_output, exist_ok=True)
+
+    ## parameters
+    outputMatches = True
+    subpixel = config["model"]["subpixel"]["enable"]
+    patch_size = config["model"]["subpixel"]["patch_size"]
+
+    # data loading
+    # from utils.loader import dataLoader_test as dataLoader
+    # task = config["data"]["dataset"]
+    # data = dataLoader(config, dataset=task)
+    # test_set, test_loader = data["test_set"], data["test_loader"]
+    # from utils.print_tool import datasize
+    # datasize(test_loader, config, tag="test")
+
+    # model loading
+    from utils.loader import get_module
+    Val_model_heatmap = get_module("", config["front_end_model"])
+    ## load pretrained
+    val_agent = Val_model_heatmap(config["model"], device=device)
+    val_agent.loadModel()
+
+     # data loading
+    from utils.loader import dataLoader_test as dataLoader
+    task = config["data"]["dataset"]
+    data = dataLoader(config, dataset=task)
+    test_set, test_loader = data["test_set"], data["test_loader"]
+    from utils.print_tool import datasize
+    datasize(test_loader, config, tag="test")
+
+    # model loading
+    from utils.loader import get_module
+    Val_model_heatmap = get_module("", config["front_end_model"])
+    ## load pretrained
+    val_agent = Val_model_heatmap(config["model"], device=device)
+    val_agent.loadModel()
+
+    ## tracker
+    tracker = PointTracker(max_length=2, nn_thresh=val_agent.nn_thresh)
+
+    ###### check!!!
+    count = 0
+    for i, sample in tqdm(enumerate(test_loader)):
+        img_0 = sample['image']
+
+        # first image, no matches
+        # img = img_0
+        def get_pts_desc_from_agent(val_agent, img, device="cpu"):
+            """
+            pts: list [numpy (3, N)]
+            desc: list [numpy (256, N)]
+            """
+            heatmap_batch = val_agent.run(
+                img.to(device)
+            )  # heatmap: numpy [batch, 1, H, W]
+            # heatmap to pts
+            pts = val_agent.heatmap_to_pts()
+            # print("pts: ", pts)
+            if subpixel:
+                pts = val_agent.soft_argmax_points(pts, patch_size=patch_size)
+            # heatmap, pts to desc
+            desc_sparse = val_agent.desc_to_sparseDesc()
+            # print("pts[0]: ", pts[0].shape, ", desc_sparse[0]: ", desc_sparse[0].shape)
+            # print("pts[0]: ", pts[0].shape)
+            outs = {"pts": pts[0], "desc": desc_sparse[0]}
+            return outs
+
+        outs = get_pts_desc_from_agent(val_agent, img_0, device=device)
+        pts, desc = outs["pts"], outs["desc"]  # pts: np [3, N]
+
+        if outputMatches == True:
+            tracker.update(pts, desc)
+
+        # save keypoints
+        pred = {"image": squeezeToNumpy(img_0)}
+        pred.update({"prob": pts.transpose(), "desc": desc.transpose()})
+
+        filename = str(count)
+        path = Path(save_output, "{}.npz".format(filename))
+        np.savez_compressed(path, **pred)
+        count += 1
 
 
 def export_descriptor(config, output_dir, args):
@@ -380,6 +476,12 @@ if __name__ == "__main__":
         "--debug", action="store_true", default=False, help="turn on debuging mode"
     )
     p_train.set_defaults(func=export_descriptor)
+
+    # inference using superpoint
+    p_train = subparsers.add_parser("inference")
+    p_train.add_argument("config", type=str)
+    p_train.add_argument("exper_name", type=str)
+    p_train.set_defaults(func=inference_superpoint)
 
     # using homography adaptation to export detection psuedo ground truth
     p_train = subparsers.add_parser("export_detector_homoAdapt")
