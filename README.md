@@ -7,6 +7,9 @@ https://github.com/rpautrat/SuperPoint.
 Please be generous to star this repo if it helps your research.
 This repo is a bi-product of our paper [deepFEPE(IROS 2020)](https://github.com/eric-yyjau/pytorch-deepFEPE.git).
 
+## Modification
+Inference module for custom trained model was updated(Infer.py export.py). 
+
 ## Differences between our implementation and original paper
 - *Descriptor loss*: We tested descriptor loss using different methods, including dense method (as paper but slightly different) and sparse method. We notice sparse loss can converge more efficiently with similar performance. The default setting here is sparse method.
 
