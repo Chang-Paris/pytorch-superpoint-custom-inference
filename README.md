@@ -37,6 +37,7 @@ python export.py inference your_config.yaml output_name
 - pytorch >= 1.1 (tested in 1.3.1)
 - torchvision >= 0.3.0 (tested in 0.4.2)
 - cuda (tested in cuda10)
+- pyyaml == 5.1
 
 ```
 conda create --name py36-sp python=3.6
