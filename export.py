@@ -67,33 +67,18 @@ def combine_heatmap(heatmap, inv_homographies, mask_2D, device="cpu"):
 
 #### end util functions
 
-
+@torch.no_grad()
 def inference_superpoint(config, output_dir, args):
     from utils.loader import get_save_path
     from utils.var_dim import squeezeToNumpy
 
     # basic settings
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    logging.info("train on device: %s", device)
-    # with open(os.path.join(output_dir, "config.yml"), "w") as f:
-        # yaml.dump(config, f, default_flow_style=False)
-    # writer = SummaryWriter(getWriterPath(task=args.command, date=True))
+    logging.info("Inference on device: %s", device)
+
     save_path = get_save_path(output_dir)
     save_output = save_path / "../predictions"
     os.makedirs(save_output, exist_ok=True)
-
-    ## parameters
-    outputMatches = True
-    subpixel = config["model"]["subpixel"]["enable"]
-    patch_size = config["model"]["subpixel"]["patch_size"]
-
-    # data loading
-    # from utils.loader import dataLoader_test as dataLoader
-    # task = config["data"]["dataset"]
-    # data = dataLoader(config, dataset=task)
-    # test_set, test_loader = data["test_set"], data["test_loader"]
-    # from utils.print_tool import datasize
-    # datasize(test_loader, config, tag="test")
 
     # model loading
     from utils.loader import get_module
@@ -117,12 +102,8 @@ def inference_superpoint(config, output_dir, args):
     val_agent = Val_model_heatmap(config["model"], device=device)
     val_agent.loadModel()
 
-    ## tracker
-    tracker = PointTracker(max_length=2)
-
     ###### check!!!
     count = 0
-    print("Length of testloader is ", len(test_loader))
     for i, sample in tqdm(enumerate(test_loader)):
         img_0 = sample['image']
 
@@ -138,9 +119,7 @@ def inference_superpoint(config, output_dir, args):
             )  # heatmap: numpy [batch, 1, H, W]
             # heatmap to pts
             pts = val_agent.heatmap_to_pts()
-            # print("pts: ", pts)
-            if subpixel:
-                pts = val_agent.soft_argmax_points(pts, patch_size=patch_size)
+
             # heatmap, pts to desc
             desc_sparse = val_agent.desc_to_sparseDesc()
             # print("pts[0]: ", pts[0].shape, ", desc_sparse[0]: ", desc_sparse[0].shape)
@@ -150,9 +129,6 @@ def inference_superpoint(config, output_dir, args):
 
         outs = get_pts_desc_from_agent(val_agent, img_0, device=device)
         pts, desc = outs["pts"], outs["desc"]  # pts: np [3, N]
-
-        if outputMatches == True:
-            tracker.update(pts, desc)
 
         # save keypoints
         pred = {"image": squeezeToNumpy(img_0)}
