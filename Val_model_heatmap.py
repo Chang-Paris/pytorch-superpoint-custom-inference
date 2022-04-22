@@ -43,7 +43,7 @@ class Val_model_heatmap(SuperPointFrontend_torch):
         # self.cuda = cuda
         self.nms_dist = self.config['nms']
         self.conf_thresh = self.config['detection_threshold']
-        self.nn_thresh = self.config['nn_thresh']  # L2 descriptor distance for good match.
+        self.nn_thresh = 0.7#self.config['nn_thresh']  # L2 descriptor distance for good match.
         self.cell = 8  # deprecated
         self.cell_size = 8  # Size of each output cell. Keep this fixed.
         self.border_remove = 4  # Remove points this close to the border.

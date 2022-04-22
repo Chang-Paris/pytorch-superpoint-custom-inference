@@ -80,7 +80,7 @@ class Kitti_inh(Coco):
         )
         self.scenes = [
             # (label folder, raw image path)
-            (Path(self.root / folder[:-1]), Path(self.root / folder[:-4] / 'image_02' / 'data') ) \
+            (Path(self.root / folder), Path(self.root / folder ) ) \
                 for folder in open(scene_list_path)
         ]
         # self.scenes_imgs = [

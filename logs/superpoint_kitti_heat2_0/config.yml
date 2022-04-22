@@ -1,4 +1,5 @@
 data:
+  root: 'datasets/kitti' # root for dataset
   augmentation:
     homographic:
       enable: false
@@ -43,7 +44,7 @@ data:
     params:
       GaussianBlur:
         sigma: 0.2
-  labels: magicpoint_synth20_homoAdapt100_kitti_h384/predictions
+  labels: #magicpoint_synth20_homoAdapt100_kitti_h384/predictions
   name: kitti
   preprocessing:
     resize:
@@ -63,9 +64,9 @@ data:
       scaling_amplitude: 0.2
       translation: true
     valid_border_margin: 3
-front_end_model: Train_model_heatmap
+front_end_model: Val_model_heatmap
 model:
-  batch_size: 4
+  batch_size: 1
   dense_loss:
     enable: false
     params:
@@ -80,6 +81,9 @@ model:
   name: SuperPointNet_gauss2
   nms: 4
   params: {}
+  subpixel:
+    enable: false
+    patch_size: 0
   sparse_loss:
     enable: true
     params:
@@ -89,7 +93,7 @@ model:
       num_masked_non_matches_per_match: 100
       num_matching_attempts: 600
       other_settings: train from pretrained, 2d method
-pretrained: logs/superpoint_coco_heat2_0/checkpoints/superPointNet_90000_checkpoint.pth.tar
+  pretrained: logs/superpoint_coco_heat2_0/checkpoints/superPointNet_90000_checkpoint.pth.tar
 reset_iter: true
 retrain: false
 save_interval: 2000

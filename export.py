@@ -102,7 +102,7 @@ def inference_superpoint(config, output_dir, args):
     val_agent = Val_model_heatmap(config["model"], device=device)
     val_agent.loadModel()
 
-     # data loading
+    # data loading
     from utils.loader import dataLoader_test as dataLoader
     task = config["data"]["dataset"]
     data = dataLoader(config, dataset=task)
@@ -118,10 +118,11 @@ def inference_superpoint(config, output_dir, args):
     val_agent.loadModel()
 
     ## tracker
-    tracker = PointTracker(max_length=2, nn_thresh=val_agent.nn_thresh)
+    tracker = PointTracker(max_length=2)
 
     ###### check!!!
     count = 0
+    print("Length of testloader is ", len(test_loader))
     for i, sample in tqdm(enumerate(test_loader)):
         img_0 = sample['image']
 
