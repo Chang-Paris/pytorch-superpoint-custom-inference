@@ -93,6 +93,7 @@ def dataLoader_test(config, dataset='syn', warp_input=False, export_task='train'
     import torchvision.transforms as transforms
     training_params = config.get('training', {})
     workers_test = training_params.get('workers_test', 1) # 16
+    workers_test=0
     logging.info(f"workers_test: {workers_test}")
 
     data_transforms = {
