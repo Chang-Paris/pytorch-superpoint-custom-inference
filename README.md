@@ -9,6 +9,10 @@ This repo is a bi-product of our paper [deepFEPE(IROS 2020)](https://github.com/
 
 ## Modification by blackpinkup 2021!!!
 Inference module for custom trained model was updated(Infer.py export.py). Use export.py to export final result of your trained model.
+Modify your dataset path and other settings in yaml before exporting.
+```
+python export.py inference your_config.yaml output_name
+```
 
 ## Differences between our implementation and original paper
 - *Descriptor loss*: We tested descriptor loss using different methods, including dense method (as paper but slightly different) and sparse method. We notice sparse loss can converge more efficiently with similar performance. The default setting here is sparse method.
