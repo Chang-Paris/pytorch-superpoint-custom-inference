@@ -9,6 +9,7 @@ Date: 2019/12/12
 import argparse
 import logging
 import os
+import yaml
 from pathlib import Path
 
 import numpy as np
@@ -16,11 +17,23 @@ import numpy as np
 import torch
 import torch.optim
 import torch.utils.data
-import yaml
 from tqdm import tqdm
 
-## parameters
-from settings import EXPER_PATH
+
+# todo define data loader here
+def dataLoader(config, dataset='', warp_input=False, export_task='train'):
+    logging.info(f"load dataset from : {dataset}")
+    from datasets.Kitti_inh import Kitti_inh as Dataset
+    test_set = Dataset(
+        export=True,
+        task=export_task,
+        **config['data'],
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_set, batch_size=1, shuffle=False,
+        pin_memory=True
+    )
+    return {'test_set': test_set, 'test_loader': test_loader}
 
 
 @torch.no_grad()
@@ -37,7 +50,6 @@ def inference_superpoint(config, output_dir, args):
     os.makedirs(save_output, exist_ok=True)
 
     # data loading
-    from utils.loader import dataLoader_test as dataLoader
     task = config["data"]["dataset"]
     data = dataLoader(config, dataset=task)
     test_set, test_loader = data["test_set"], data["test_loader"]
@@ -109,7 +121,7 @@ if __name__ == "__main__":
     with open(args.config, "r") as f:
         config = yaml.load(f)
     print("check config!! ", config)
-
+    EXPER_PATH = "./logs"
     output_dir = os.path.join(EXPER_PATH, args.exper_name)
     os.makedirs(output_dir, exist_ok=True)
 
