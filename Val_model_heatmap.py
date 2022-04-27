@@ -46,10 +46,8 @@ class Val_model_heatmap():
         pass
 
     def loadModel(self):
-        # model = 'SuperPointNet'
-        # params = self.config['model']['subpixel']['params']
-        from utils.loader import modelLoader
-        self.net = modelLoader(model=self.model, **self.params)
+        from models.SuperPointNet_gauss2 import SuperPointNet_gauss2
+        self.net = SuperPointNet_gauss2(self.params)
 
         checkpoint = torch.load(self.weights_path,
                                 map_location=lambda storage, loc: storage)
