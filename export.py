@@ -20,8 +20,8 @@ import torch.utils.data
 from tqdm import tqdm
 
 
-# todo define data loader here
-def dataLoader(config, dataset='', warp_input=False, export_task='train'):
+# define data loader here
+def dataLoader(config, dataset='', export_task='train'):
     logging.info(f"load dataset from : {dataset}")
     from datasets.Kitti_inh import Kitti_inh as Dataset
     test_set = Dataset(
