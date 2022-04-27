@@ -7,127 +7,326 @@ Date: 2019/12/12
 
 ## basic
 import argparse
-import time
-import csv
-import yaml
-import os
-import logging
-from pathlib import Path
 import cv2
+import logging
+import os
+import random
+import yaml
+from pathlib import Path
 
 import numpy as np
-from imageio import imread
-from tqdm import tqdm
-from tensorboardX import SummaryWriter
-
 ## torch
 import torch
-from torch.autograd import Variable
-import torch.backends.cudnn as cudnn
 import torch.optim
-import torch.nn as nn
-import torch.nn.functional as F
 import torch.utils.data
-
-## other functions
-from utils.utils import (
-    tensor2array,
-    save_checkpoint,
-    load_checkpoint,
-    save_path_formatter,
-)
-from utils.utils import getWriterPath
-from utils.loader import dataLoader, modelLoader, pretrainedLoader
-from utils.utils import inv_warp_image_batch
-from models.model_wrap import SuperPointFrontend_torch, PointTracker
-
-## parameters
-from settings import EXPER_PATH
-
-#### util functions
+from tqdm import tqdm
+import torch.utils.data as data
+import torch.nn.functional as F
 
 
-def combine_heatmap(heatmap, inv_homographies, mask_2D, device="cpu"):
-    ## multiply heatmap with mask_2D
-    heatmap = heatmap * mask_2D
+torch.set_default_tensor_type(torch.FloatTensor)
 
-    heatmap = inv_warp_image_batch(
-        heatmap, inv_homographies[0, :, :, :], device=device, mode="bilinear"
+# todo needs to be cleaned
+import collections
+
+
+def dict_update(d, u):
+    """Improved update for nested dictionaries.
+
+    Arguments:
+        d: The dictionary to be updated.
+        u: The update dictionary.
+
+    Returns:
+        The updated dictionary.
+    """
+    for k, v in u.items():
+        if isinstance(v, collections.Mapping):
+            d[k] = dict_update(d.get(k, {}), v)
+        else:
+            d[k] = v
+    return d
+
+def warp_points(points, homographies, device='cpu'):
+    """
+    Warp a list of points with the given homography.
+
+    Arguments:
+        points: list of N points, shape (N, 2(x, y))).
+        homography: batched or not (shapes (B, 3, 3) and (...) respectively).
+
+    Returns: a Tensor of shape (N, 2) or (B, N, 2(x, y)) (depending on whether the homography
+            is batched) containing the new coordinates of the warped points.
+
+    """
+    # expand points len to (x, y, 1)
+    no_batches = len(homographies.shape) == 2
+    homographies = homographies.unsqueeze(0) if no_batches else homographies
+    # homographies = homographies.unsqueeze(0) if len(homographies.shape) == 2 else homographies
+    batch_size = homographies.shape[0]
+    points = torch.cat((points.float(), torch.ones((points.shape[0], 1)).to(device)), dim=1)
+    points = points.to(device)
+    homographies = homographies.view(batch_size*3,3)
+    # warped_points = homographies*points
+    # points = points.double()
+    warped_points = homographies@points.transpose(0,1)
+    # warped_points = np.tensordot(homographies, points.transpose(), axes=([2], [0]))
+    # normalize the points
+    warped_points = warped_points.view([batch_size, 3, -1])
+    warped_points = warped_points.transpose(2, 1)
+    warped_points = warped_points[:, :, :2] / warped_points[:, :, 2:]
+    return warped_points[0,:,:] if no_batches else warped_points
+
+def inv_warp_image_batch(img, mat_homo_inv, device='cpu', mode='bilinear'):
+    '''
+    Inverse warp images in batch
+
+    :param img:
+        batch of images
+        tensor [batch_size, 1, H, W]
+    :param mat_homo_inv:
+        batch of homography matrices
+        tensor [batch_size, 3, 3]
+    :param device:
+        GPU device or CPU
+    :return:
+        batch of warped images
+        tensor [batch_size, 1, H, W]
+    '''
+    # compute inverse warped points
+    if len(img.shape) == 2 or len(img.shape) == 3:
+        img = img.view(1,1,img.shape[0], img.shape[1])
+    if len(mat_homo_inv.shape) == 2:
+        mat_homo_inv = mat_homo_inv.view(1,3,3)
+
+    Batch, channel, H, W = img.shape
+    coor_cells = torch.stack(torch.meshgrid(torch.linspace(-1, 1, W), torch.linspace(-1, 1, H)), dim=2)
+    coor_cells = coor_cells.transpose(0, 1)
+    coor_cells = coor_cells.to(device)
+    coor_cells = coor_cells.contiguous()
+
+    src_pixel_coords = warp_points(coor_cells.view([-1, 2]), mat_homo_inv, device)
+    src_pixel_coords = src_pixel_coords.view([Batch, H, W, 2])
+    src_pixel_coords = src_pixel_coords.float()
+
+    warped_img = F.grid_sample(img, src_pixel_coords, mode=mode, align_corners=True)
+    return warped_img
+
+
+def compute_valid_mask(image_shape, inv_homography, device='cpu', erosion_radius=0):
+    """
+    Compute a boolean mask of the valid pixels resulting from an homography applied to
+    an image of a given shape. Pixels that are False correspond to bordering artifacts.
+    A margin can be discarded using erosion.
+
+    Arguments:
+        input_shape: Tensor of rank 2 representing the image shape, i.e. `[H, W]`.
+        homography: Tensor of shape (B, 8) or (8,), where B is the batch size.
+        `erosion_radius: radius of the margin to be discarded.
+
+    Returns: a Tensor of type `tf.int32` and shape (H, W).
+    """
+    # mask = H_transform(tf.ones(image_shape), homography, interpolation='NEAREST')
+    # mask = H_transform(tf.ones(image_shape), homography, interpolation='NEAREST')
+    if inv_homography.dim() == 2:
+        inv_homography = inv_homography.view(-1, 3, 3)
+    batch_size = inv_homography.shape[0]
+    mask = torch.ones(batch_size, 1, image_shape[0], image_shape[1]).to(device)
+    mask = inv_warp_image_batch(mask, inv_homography, device=device, mode='nearest')
+    mask = mask.view(batch_size, image_shape[0], image_shape[1])
+    mask = mask.cpu().numpy()
+    if erosion_radius > 0:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erosion_radius*2,)*2)
+        for i in range(batch_size):
+            mask[i, :, :] = cv2.erode(mask[i, :, :], kernel, iterations=1)
+
+    return torch.tensor(mask).to(device)
+
+
+# define custom dataset
+class customDataset(data.Dataset):
+    default_config = {
+        "cache_in_memory": False,
+        "validation_size": 100,
+        "truncate": None,
+        "preprocessing": {"resize": [240, 320]},
+        "num_parallel_calls": 10,
+        "homography_adaptation": {"enable": False},
+    }
+
+    def __init__(
+        self,
+        export=False,
+        transform=None,
+        task="train",
+        seed=0,
+        sequence_length=1,
+        **config,
+    ):
+        # Update config
+        self.config = self.default_config
+        self.config = dict_update(self.config, config)
+
+        self.transforms = transform
+        self.action = "val"
+
+        # get files
+        self.root = Path(self.config["root"])  # Path(KITTI_DATA_PATH)
+
+        root_split_txt = self.config.get("root_split_txt", None)
+        self.root_split_txt = Path(
+            self.root if root_split_txt is None else root_split_txt
+        )
+        scene_list_path = (
+            self.root_split_txt / "val.txt"
+        )
+        self.scenes = [
+            # (label folder, raw image path)
+            (Path(self.root / folder), Path(self.root / folder ) ) \
+                for folder in open(scene_list_path)
+        ]
+        self.crawl_folders(sequence_length)
+        self.compute_valid_mask = compute_valid_mask
+        if self.config['preprocessing']['resize']:
+            self.sizer = self.config['preprocessing']['resize']
+
+    def crawl_folders(self, sequence_length):
+        sequence_set = []
+        demi_length = sequence_length - 1
+
+        for (scene, scene_img_folder) in self.scenes:
+            # intrinsics and imu_pose_matrixs are redundant for superpoint training
+            intrinsics = np.eye(3)
+
+            # get images
+            image_paths = list(scene_img_folder.iterdir())
+            names = [p.stem for p in image_paths]
+            imgs = [str(p) for p in image_paths]
+
+            if len(imgs) < sequence_length:
+                continue
+
+            for i in range(0, len(imgs) - demi_length):
+                sample = {
+                    "intrinsics": intrinsics,
+                    "imgs": [imgs[i]],
+                    "scene_name": scene.name,
+                    "frame_ids": [i],
+                    "name": [names[i]],
+                }
+
+                if sample is not None:
+                    for j in range(1, demi_length + 1):
+                        sample["image"].append(imgs[i + j])
+                        sample["frame_ids"].append(i + j)
+                    sequence_set.append(sample)
+        random.shuffle(sequence_set)
+        self.samples = sequence_set
+        logging.info("Finished crawl_folders for KITTI.")
+
+    def get_img_from_sample(self, sample):
+        imgs_path = sample["imgs"]
+        return str(imgs_path[0])
+
+    def get_from_sample(self, entry, sample):
+        return str(sample[entry][0])
+
+    def format_sample(self, sample):
+        sample_fix = {}
+        sample_fix["image"] = str(sample["imgs"][0])
+        sample_fix["name"] = str(sample["scene_name"] + "/" + sample["name"][0])
+        sample_fix["scene_name"] = str(sample["scene_name"])
+
+        return sample_fix
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index):
+        '''
+
+        :param index:
+        :return:
+            image: tensor (H, W, channel=1)
+        '''
+        def _read_image(path):
+            cell = 8
+            input_image = cv2.imread(path)
+            input_image = cv2.resize(input_image, (self.sizer[1], self.sizer[0]),
+                                     interpolation=cv2.INTER_AREA)
+            H, W = input_image.shape[0], input_image.shape[1]
+
+            input_image = cv2.cvtColor(input_image, cv2.COLOR_RGB2GRAY)
+            input_image = input_image.astype('float32') / 255.0
+            return input_image
+
+        sample = self.samples[index]
+        sample = self.format_sample(sample)
+        input = {}
+        input.update(sample)
+
+        img_o = _read_image(sample['image'])
+        H, W = img_o.shape[0], img_o.shape[1]
+        img_aug = img_o.copy()
+
+        img_aug = torch.tensor(img_aug, dtype=torch.float32).view(-1, H, W)
+
+        valid_mask = self.compute_valid_mask(torch.tensor([H, W]), inv_homography=torch.eye(3))
+        input.update({'image': img_aug})
+        input.update({'valid_mask': valid_mask})
+
+        name = sample['name']
+
+        input.update({'name': name, 'scene_name': "./"})  # dummy scene name
+        return input
+
+
+# define data loader here
+def dataLoader(config, dataset='', export_task='train'):
+    logging.info(f"load dataset from : {dataset}")
+    from datasets.Kitti_inh import Kitti_inh as Dataset
+    test_set = customDataset(
+        export=True,
+        task=export_task,
+        **config['data'],
     )
-
-    ##### check
-    mask_2D = inv_warp_image_batch(
-        mask_2D, inv_homographies[0, :, :, :], device=device, mode="bilinear"
+    test_loader = torch.utils.data.DataLoader(
+        test_set, batch_size=1, shuffle=False,
+        pin_memory=True
     )
-    heatmap = torch.sum(heatmap, dim=0)
-    mask_2D = torch.sum(mask_2D, dim=0)
-    return heatmap / mask_2D
-    pass
+    return {'test_set': test_set, 'test_loader': test_loader}
 
 
-#### end util functions
-
-
+@torch.no_grad()
 def inference_superpoint(config, output_dir, args):
     from utils.loader import get_save_path
     from utils.var_dim import squeezeToNumpy
 
     # basic settings
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    logging.info("train on device: %s", device)
-    # with open(os.path.join(output_dir, "config.yml"), "w") as f:
-        # yaml.dump(config, f, default_flow_style=False)
-    # writer = SummaryWriter(getWriterPath(task=args.command, date=True))
+    logging.info("Inference on device: %s", device)
+
     save_path = get_save_path(output_dir)
     save_output = save_path / "../predictions"
     os.makedirs(save_output, exist_ok=True)
 
-    ## parameters
-    outputMatches = True
-    subpixel = config["model"]["subpixel"]["enable"]
-    patch_size = config["model"]["subpixel"]["patch_size"]
-
     # data loading
-    # from utils.loader import dataLoader_test as dataLoader
-    # task = config["data"]["dataset"]
-    # data = dataLoader(config, dataset=task)
-    # test_set, test_loader = data["test_set"], data["test_loader"]
-    # from utils.print_tool import datasize
-    # datasize(test_loader, config, tag="test")
-
-    # model loading
-    from utils.loader import get_module
-    Val_model_heatmap = get_module("", config["front_end_model"])
-    ## load pretrained
-    val_agent = Val_model_heatmap(config["model"], device=device)
-    val_agent.loadModel()
-
-    # data loading
-    from utils.loader import dataLoader_test as dataLoader
     task = config["data"]["dataset"]
     data = dataLoader(config, dataset=task)
     test_set, test_loader = data["test_set"], data["test_loader"]
-    from utils.print_tool import datasize
-    datasize(test_loader, config, tag="test")
 
     # model loading
-    from utils.loader import get_module
-    Val_model_heatmap = get_module("", config["front_end_model"])
+    from Val_model_heatmap import Val_model_heatmap
     ## load pretrained
     val_agent = Val_model_heatmap(config["model"], device=device)
     val_agent.loadModel()
 
-    ## tracker
-    tracker = PointTracker(max_length=2)
-
-    ###### check!!!
+    # Run inference on dataloader
     count = 0
-    print("Length of testloader is ", len(test_loader))
     for i, sample in tqdm(enumerate(test_loader)):
         img_0 = sample['image']
 
         # first image, no matches
-        # img = img_0
         def get_pts_desc_from_agent(val_agent, img, device="cpu"):
             """
             pts: list [numpy (3, N)]
@@ -138,21 +337,15 @@ def inference_superpoint(config, output_dir, args):
             )  # heatmap: numpy [batch, 1, H, W]
             # heatmap to pts
             pts = val_agent.heatmap_to_pts()
-            # print("pts: ", pts)
-            if subpixel:
-                pts = val_agent.soft_argmax_points(pts, patch_size=patch_size)
+
             # heatmap, pts to desc
             desc_sparse = val_agent.desc_to_sparseDesc()
-            # print("pts[0]: ", pts[0].shape, ", desc_sparse[0]: ", desc_sparse[0].shape)
-            # print("pts[0]: ", pts[0].shape)
+
             outs = {"pts": pts[0], "desc": desc_sparse[0]}
             return outs
 
         outs = get_pts_desc_from_agent(val_agent, img_0, device=device)
         pts, desc = outs["pts"], outs["desc"]  # pts: np [3, N]
-
-        if outputMatches == True:
-            tracker.update(pts, desc)
 
         # save keypoints
         pred = {"image": squeezeToNumpy(img_0)}
@@ -162,296 +355,6 @@ def inference_superpoint(config, output_dir, args):
         path = Path(save_output, "{}.npz".format(filename))
         np.savez_compressed(path, **pred)
         count += 1
-
-
-def export_descriptor(config, output_dir, args):
-    """
-    # input 2 images, output keypoints and correspondence
-    save prediction:
-        pred:
-            'image': np(320,240)
-            'prob' (keypoints): np (N1, 2)
-            'desc': np (N2, 256)
-            'warped_image': np(320,240)
-            'warped_prob' (keypoints): np (N2, 2)
-            'warped_desc': np (N2, 256)
-            'homography': np (3,3)
-            'matches': np [N3, 4]
-    """
-    from utils.loader import get_save_path
-    from utils.var_dim import squeezeToNumpy
-
-    # basic settings
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    logging.info("train on device: %s", device)
-    with open(os.path.join(output_dir, "config.yml"), "w") as f:
-        yaml.dump(config, f, default_flow_style=False)
-    writer = SummaryWriter(getWriterPath(task=args.command, date=True))
-    save_path = get_save_path(output_dir)
-    save_output = save_path / "../predictions"
-    os.makedirs(save_output, exist_ok=True)
-
-    ## parameters
-    outputMatches = True
-    subpixel = config["model"]["subpixel"]["enable"]
-    patch_size = config["model"]["subpixel"]["patch_size"]
-
-    # data loading
-    from utils.loader import dataLoader_test as dataLoader
-    task = config["data"]["dataset"]
-    data = dataLoader(config, dataset=task)
-    test_set, test_loader = data["test_set"], data["test_loader"]
-    from utils.print_tool import datasize
-    datasize(test_loader, config, tag="test")
-
-    # model loading
-    from utils.loader import get_module
-    Val_model_heatmap = get_module("", config["front_end_model"])
-    ## load pretrained
-    val_agent = Val_model_heatmap(config["model"], device=device)
-    val_agent.loadModel()
-
-    ## tracker
-    tracker = PointTracker(max_length=2, nn_thresh=val_agent.nn_thresh)
-
-    ###### check!!!
-    count = 0
-    for i, sample in tqdm(enumerate(test_loader)):
-        img_0, img_1 = sample["image"], sample["warped_image"]
-
-        # first image, no matches
-        # img = img_0
-        def get_pts_desc_from_agent(val_agent, img, device="cpu"):
-            """
-            pts: list [numpy (3, N)]
-            desc: list [numpy (256, N)]
-            """
-            heatmap_batch = val_agent.run(
-                img.to(device)
-            )  # heatmap: numpy [batch, 1, H, W]
-            # heatmap to pts
-            pts = val_agent.heatmap_to_pts()
-            # print("pts: ", pts)
-            if subpixel:
-                pts = val_agent.soft_argmax_points(pts, patch_size=patch_size)
-            # heatmap, pts to desc
-            desc_sparse = val_agent.desc_to_sparseDesc()
-            # print("pts[0]: ", pts[0].shape, ", desc_sparse[0]: ", desc_sparse[0].shape)
-            # print("pts[0]: ", pts[0].shape)
-            outs = {"pts": pts[0], "desc": desc_sparse[0]}
-            return outs
-
-        def transpose_np_dict(outs):
-            for entry in list(outs):
-                outs[entry] = outs[entry].transpose()
-
-        outs = get_pts_desc_from_agent(val_agent, img_0, device=device)
-        pts, desc = outs["pts"], outs["desc"]  # pts: np [3, N]
-
-        if outputMatches == True:
-            tracker.update(pts, desc)
-
-        # save keypoints
-        pred = {"image": squeezeToNumpy(img_0)}
-        pred.update({"prob": pts.transpose(), "desc": desc.transpose()})
-
-        # second image, output matches
-        outs = get_pts_desc_from_agent(val_agent, img_1, device=device)
-        pts, desc = outs["pts"], outs["desc"]
-
-        if outputMatches == True:
-            tracker.update(pts, desc)
-
-        pred.update({"warped_image": squeezeToNumpy(img_1)})
-        # print("total points: ", pts.shape)
-        pred.update(
-            {
-                "warped_prob": pts.transpose(),
-                "warped_desc": desc.transpose(),
-                "homography": squeezeToNumpy(sample["homography"]),
-            }
-        )
-
-        if outputMatches == True:
-            matches = tracker.get_matches()
-            print("matches: ", matches.transpose().shape)
-            pred.update({"matches": matches.transpose()})
-        print("pts: ", pts.shape, ", desc: ", desc.shape)
-
-        # clean last descriptor
-        tracker.clear_desc()
-
-        filename = str(count)
-        path = Path(save_output, "{}.npz".format(filename))
-        np.savez_compressed(path, **pred)
-        # print("save: ", path)
-        count += 1
-    print("output pairs: ", count)
-
-
-@torch.no_grad()
-def export_detector_homoAdapt_gpu(config, output_dir, args):
-    """
-    input 1 images, output pseudo ground truth by homography adaptation.
-    Save labels:
-        pred:
-            'prob' (keypoints): np (N1, 3)
-    """
-    from utils.utils import pltImshow
-    from utils.utils import saveImg
-    from utils.draw import draw_keypoints
-
-    # basic setting
-    task = config["data"]["dataset"]
-    export_task = config["data"]["export_folder"]
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-    logging.info("train on device: %s", device)
-    with open(os.path.join(output_dir, "config.yml"), "w") as f:
-        yaml.dump(config, f, default_flow_style=False)
-    writer = SummaryWriter(
-        getWriterPath(task=args.command, exper_name=args.exper_name, date=True)
-    )
-
-    ## parameters
-    nms_dist = config["model"]["nms"]  # 4
-    top_k = config["model"]["top_k"]
-    homoAdapt_iter = config["data"]["homography_adaptation"]["num"]
-    conf_thresh = config["model"]["detection_threshold"]
-    nn_thresh = 0.7
-    outputMatches = True
-    count = 0
-    max_length = 5
-    output_images = args.outputImg
-    check_exist = True
-
-    ## save data
-    save_path = Path(output_dir)
-    save_output = save_path
-    save_output = save_output / "predictions" / export_task
-    save_path = save_path / "checkpoints"
-    logging.info("=> will save everything to {}".format(save_path))
-    os.makedirs(save_path, exist_ok=True)
-    os.makedirs(save_output, exist_ok=True)
-
-    # data loading
-    from utils.loader import dataLoader_test as dataLoader
-
-    data = dataLoader(config, dataset=task, export_task=export_task)
-    test_set, test_loader = data["test_set"], data["test_loader"]
-
-    # model loading
-    ## load pretrained
-    try:
-        path = config["pretrained"]
-        print("==> Loading pre-trained network.")
-        print("path: ", path)
-        # This class runs the SuperPoint network and processes its outputs.
-
-        fe = SuperPointFrontend_torch(
-            config=config,
-            weights_path=path,
-            nms_dist=nms_dist,
-            conf_thresh=conf_thresh,
-            nn_thresh=nn_thresh,
-            cuda=False,
-            device=device,
-        )
-        print("==> Successfully loaded pre-trained network.")
-
-        fe.net_parallel()
-        print(path)
-        # save to files
-        save_file = save_output / "export.txt"
-        with open(save_file, "a") as myfile:
-            myfile.write("load model: " + path + "\n")
-    except Exception:
-        print(f"load model: {path} failed! ")
-        raise
-
-    def load_as_float(path):
-        return imread(path).astype(np.float32) / 255
-
-    tracker = PointTracker(max_length, nn_thresh=fe.nn_thresh)
-    with open(save_file, "a") as myfile:
-        myfile.write("homography adaptation: " + str(homoAdapt_iter) + "\n")
-
-    ## loop through all images
-    for i, sample in tqdm(enumerate(test_loader)):
-        img, mask_2D = sample["image"], sample["valid_mask"]
-        img = img.transpose(0, 1)
-        img_2D = sample["image_2D"].numpy().squeeze()
-        mask_2D = mask_2D.transpose(0, 1)
-
-        inv_homographies, homographies = (
-            sample["homographies"],
-            sample["inv_homographies"],
-        )
-        img, mask_2D, homographies, inv_homographies = (
-            img.to(device),
-            mask_2D.to(device),
-            homographies.to(device),
-            inv_homographies.to(device),
-        )
-        # sample = test_set[i]
-        name = sample["name"][0]
-        logging.info(f"name: {name}")
-        if check_exist:
-            p = Path(save_output, "{}.npz".format(name))
-            if p.exists():
-                logging.info("file %s exists. skip the sample.", name)
-                continue
-
-        # pass through network
-        heatmap = fe.run(img, onlyHeatmap=True, train=False)
-        outputs = combine_heatmap(heatmap, inv_homographies, mask_2D, device=device)
-        pts = fe.getPtsFromHeatmap(outputs.detach().cpu().squeeze())  # (x,y, prob)
-
-        # subpixel prediction
-        if config["model"]["subpixel"]["enable"]:
-            fe.heatmap = outputs  # tensor [batch, 1, H, W]
-            print("outputs: ", outputs.shape)
-            print("pts: ", pts.shape)
-            pts = fe.soft_argmax_points([pts])
-            pts = pts[0]
-
-        ## top K points
-        pts = pts.transpose()
-        print("total points: ", pts.shape)
-        print("pts: ", pts[:5])
-        if top_k:
-            if pts.shape[0] > top_k:
-                pts = pts[:top_k, :]
-                print("topK filter: ", pts.shape)
-
-        ## save keypoints
-        pred = {}
-        pred.update({"pts": pts})
-
-        ## - make directories
-        filename = str(name)
-        if task == "Kitti" or "Kitti_inh":
-            scene_name = sample["scene_name"][0]
-            os.makedirs(Path(save_output, scene_name), exist_ok=True)
-
-        path = Path(save_output, "{}.npz".format(filename))
-        np.savez_compressed(path, **pred)
-
-        ## output images for visualization labels
-        if output_images:
-            img_pts = draw_keypoints(img_2D * 255, pts.transpose())
-            f = save_output / (str(count) + ".png")
-            if task == "Coco" or "Kitti":
-                f = save_output / (name + ".png")
-            saveImg(img_pts, str(f))
-        count += 1
-
-    print("output pseudo ground truth: ", count)
-    save_file = save_output / "export.txt"
-    with open(save_file, "a") as myfile:
-        myfile.write("Homography adaptation: " + str(homoAdapt_iter) + "\n")
-        myfile.write("output pairs: " + str(count) + "\n")
-    pass
 
 
 if __name__ == "__main__":
@@ -467,45 +370,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")
 
-    # export command
-    p_train = subparsers.add_parser("export_descriptor")
-    p_train.add_argument("config", type=str)
-    p_train.add_argument("exper_name", type=str)
-    p_train.add_argument("--correspondence", action="store_true")
-    p_train.add_argument("--eval", action="store_true")
-    p_train.add_argument(
-        "--debug", action="store_true", default=False, help="turn on debuging mode"
-    )
-    p_train.set_defaults(func=export_descriptor)
-
     # inference using superpoint
     p_train = subparsers.add_parser("inference")
     p_train.add_argument("config", type=str)
     p_train.add_argument("exper_name", type=str)
     p_train.set_defaults(func=inference_superpoint)
 
-    # using homography adaptation to export detection psuedo ground truth
-    p_train = subparsers.add_parser("export_detector_homoAdapt")
-    p_train.add_argument("config", type=str)
-    p_train.add_argument("exper_name", type=str)
-    p_train.add_argument("--eval", action="store_true")
-    p_train.add_argument(
-        "--outputImg", action="store_true", help="output image for visualization"
-    )
-    p_train.add_argument(
-        "--debug", action="store_true", default=False, help="turn on debuging mode"
-    )
-    # p_train.set_defaults(func=export_detector_homoAdapt)
-    p_train.set_defaults(func=export_detector_homoAdapt_gpu)
-
     args = parser.parse_args()
     with open(args.config, "r") as f:
         config = yaml.load(f)
     print("check config!! ", config)
-
+    EXPER_PATH = "./logs"
     output_dir = os.path.join(EXPER_PATH, args.exper_name)
     os.makedirs(output_dir, exist_ok=True)
 
-    # with capture_outputs(os.path.join(output_dir, 'log')):
     logging.info("Running command {}".format(args.command.upper()))
     args.func(config, output_dir, args)

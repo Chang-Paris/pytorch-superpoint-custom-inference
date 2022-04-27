@@ -5,31 +5,19 @@ Date: 2019/12/12
 """
 
 
-import numpy as np
-import torch
-from torch.autograd import Variable
-import torch.backends.cudnn as cudnn
-import torch.optim
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.utils.data
-from tqdm import tqdm
-from utils.loader import dataLoader, modelLoader, pretrainedLoader
 import logging
 
-from utils.tools import dict_update
+import numpy as np
+import torch
+import torch.nn.functional as F
+import torch.optim
+import torch.utils.data
 
-from utils.utils import labels2Dto3D, flattenDetection, labels2Dto3D_flattened
+from utils.utils import flattenDetection
 
-from utils.utils import pltImshow, saveImg
-from utils.utils import precisionRecall_torch
-from utils.utils import save_checkpoint
-
-from pathlib import Path
-from models.model_wrap import SuperPointFrontend_torch
 
 @torch.no_grad()
-class Val_model_heatmap(SuperPointFrontend_torch):
+class Val_model_heatmap():
     def __init__(self, config, device='cpu', verbose=False):
         self.config = config
         self.model = self.config['name']
@@ -57,12 +45,9 @@ class Val_model_heatmap(SuperPointFrontend_torch):
         self.patches = None
         pass
 
-
     def loadModel(self):
-        # model = 'SuperPointNet'
-        # params = self.config['model']['subpixel']['params']
-        from utils.loader import modelLoader
-        self.net = modelLoader(model=self.model, **self.params)
+        from models.SuperPointNet_gauss2 import SuperPointNet_gauss2
+        self.net = SuperPointNet_gauss2(self.params)
 
         checkpoint = torch.load(self.weights_path,
                                 map_location=lambda storage, loc: storage)
@@ -72,39 +57,20 @@ class Val_model_heatmap(SuperPointFrontend_torch):
         logging.info('successfully load pretrained model from: %s', self.weights_path)
         pass
 
-    def extract_patches(self, label_idx, img):
-        """
-        input: 
-            label_idx: tensor [N, 4]: (batch, 0, y, x)
-            img: tensor [batch, channel(1), H, W]
-        """
-        from utils.losses import extract_patches
-        patch_size = self.config['params']['patch_size']
-        patches = extract_patches(label_idx.to(self.device), img.to(self.device), 
-            patch_size=patch_size)
-        return patches
-        pass
-
     def run(self, images):
         """
         input: 
             images: tensor[batch(1), 1, H, W]
 
         """
-        from Train_model_heatmap import Train_model_heatmap
         from utils.var_dim import toNumpy
-        train_agent = Train_model_heatmap
 
         with torch.no_grad():
             outs = self.net(images)
         semi = outs['semi']
         self.outs = outs
 
-        channel = semi.shape[1]
-        if channel == 64:
-            heatmap = train_agent.flatten_64to1(semi, cell_size=self.cell_size)
-        elif channel == 65:
-            heatmap = flattenDetection(semi, tensor=True)
+        heatmap = flattenDetection(semi, tensor=True)
             
         heatmap_np = toNumpy(heatmap)
         self.heatmap = heatmap_np
@@ -118,90 +84,122 @@ class Val_model_heatmap(SuperPointFrontend_torch):
         self.pts_nms_batch = pts_nms_batch
         return pts_nms_batch
 
-
-    # def soft_argmax_points(self):
-    #     """
-    #     # make sure you have points ahead
-    #     inputs:
-
-    #     """
-    #     # from utils.losses import extract_patches
-    #     from utils.losses import extract_patch_from_points
-
-    #     ##### check not take care of batch #####
-    #     print("not take care of batch! only take first element!")
-    #     pts = self.pts_nms_batch
-    #     pts = pts[0].transpose().copy()
-    #     patches = extract_patch_from_points(self.heatmap, pts, patch_size=5)
-    #     import torch
-    #     patches = np.stack(patches)
-    #     patches_torch = torch.tensor(patches, dtype=torch.float32).unsqueeze(0)
-    #     print("patches: ", patches_torch.shape)
-    #     print("pts: ", pts.shape)
-
-    #     dxdy = soft_argmax_2d(patches_torch)
-    #     print("dxdy: ", dxdy.shape)
-    #     points = pts
-    #     points[:,:2] += dxdy.numpy().squeeze()
-    #     self.pts_subpixel = [points.transpose().copy()]
-    #     return self.pts_subpixel.copy()
-    #     pass
-
-
     def desc_to_sparseDesc(self):
         # pts_nms_batch = [self.getPtsFromHeatmap(h) for h in heatmap_np]
         desc_sparse_batch = [self.sample_desc_from_points(self.outs['desc'], pts) for pts in self.pts_nms_batch]
         self.desc_sparse_batch = desc_sparse_batch
         return desc_sparse_batch
 
+    def getPtsFromHeatmap(self, heatmap):
+        '''
+        :param self:
+        :param heatmap:
+            np (H, W)
+        :return:
+        '''
+        heatmap = heatmap.squeeze()
+        # print("heatmap sq:", heatmap.shape)
+        H, W = heatmap.shape[0], heatmap.shape[1]
+        xs, ys = np.where(heatmap >= self.conf_thresh)  # Confidence threshold.
+        self.sparsemap = (heatmap >= self.conf_thresh)
+        if len(xs) == 0:
+            return np.zeros((3, 0))
+        pts = np.zeros((3, len(xs)))  # Populate point data sized 3xN.
+        pts[0, :] = ys # abuse of ys, xs
+        pts[1, :] = xs
+        pts[2, :] = heatmap[xs, ys]  # check the (x, y) here
+        pts, _ = self.nms_fast(pts, H, W, dist_thresh=self.nms_dist)  # Apply NMS.
+        inds = np.argsort(pts[2, :])
+        pts = pts[:, inds[::-1]]  # Sort by confidence.
+        # Remove points along border.
+        bord = self.border_remove
+        toremoveW = np.logical_or(pts[0, :] < bord, pts[0, :] >= (W - bord))
+        toremoveH = np.logical_or(pts[1, :] < bord, pts[1, :] >= (H - bord))
+        toremove = np.logical_or(toremoveW, toremoveH)
+        pts = pts[:, ~toremove]
+        return pts
 
+    def nms_fast(self, in_corners, H, W, dist_thresh):
+        """
+        Run a faster approximate Non-Max-Suppression on numpy corners shaped:
+          3xN [x_i,y_i,conf_i]^T
 
-if __name__ == '__main__':
-    # filename = 'configs/magicpoint_shapes_subpix.yaml'
-    filename = 'configs/magicpoint_repeatability_heatmap.yaml'
-    import yaml
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        Algo summary: Create a grid sized HxW. Assign each corner location a 1, rest
+        are zeros. Iterate through all the 1's and convert them either to -1 or 0.
+        Suppress points by setting nearby values to 0.
 
-    torch.set_default_tensor_type(torch.FloatTensor)
-    with open(filename, 'r') as f:
-        config = yaml.load(f)
+        Grid Value Legend:
+        -1 : Kept.
+         0 : Empty or suppressed.
+         1 : To be processed (converted to either kept or supressed).
 
-    task = config['data']['dataset']
-    # data loading
-    from utils.loader import dataLoader_test as dataLoader
-    data = dataLoader(config, dataset='hpatches')
-    test_set, test_loader = data['test_set'], data['test_loader']
+        NOTE: The NMS first rounds points to integers, so NMS distance might not
+        be exactly dist_thresh. It also assumes points are within image boundaries.
 
-    # load frontend
-    val_agent = Val_model_heatmap(config['model'], device=device)
+        Inputs
+          in_corners - 3xN numpy array with corners [x_i, y_i, confidence_i]^T.
+          H - Image height.
+          W - Image width.
+          dist_thresh - Distance to suppress, measured as an infinty norm distance.
+        Returns
+          nmsed_corners - 3xN numpy matrix with surviving corners.
+          nmsed_inds - N length numpy vector with surviving corner indices.
+        """
+        grid = np.zeros((H, W)).astype(int)  # Track NMS data.
+        inds = np.zeros((H, W)).astype(int)  # Store indices of points.
+        # Sort by confidence and round to nearest int.
+        inds1 = np.argsort(-in_corners[2, :])
+        corners = in_corners[:, inds1]
+        rcorners = corners[:2, :].round().astype(int)  # Rounded corners.
+        # Check for edge case of 0 or 1 corners.
+        if rcorners.shape[1] == 0:
+            return np.zeros((3, 0)).astype(int), np.zeros(0).astype(int)
+        if rcorners.shape[1] == 1:
+            out = np.vstack((rcorners, in_corners[2])).reshape(3, 1)
+            return out, np.zeros((1)).astype(int)
+        # Initialize the grid.
+        for i, rc in enumerate(rcorners.T):
+            grid[rcorners[1, i], rcorners[0, i]] = 1
+            inds[rcorners[1, i], rcorners[0, i]] = i
+        # Pad the border of the grid, so that we can NMS points near the border.
+        pad = dist_thresh
+        grid = np.pad(grid, ((pad, pad), (pad, pad)), mode='constant')
+        # Iterate through points, highest to lowest conf, suppress neighborhood.
+        count = 0
+        for i, rc in enumerate(rcorners.T):
+            # Account for top and left padding.
+            pt = (rc[0] + pad, rc[1] + pad)
+            if grid[pt[1], pt[0]] == 1:  # If not yet suppressed.
+                grid[pt[1] - pad:pt[1] + pad + 1, pt[0] - pad:pt[0] + pad + 1] = 0
+                grid[pt[1], pt[0]] = -1
+                count += 1
+        # Get all surviving -1's and return sorted array of remaining corners.
+        keepy, keepx = np.where(grid == -1)
+        keepy, keepx = keepy - pad, keepx - pad
+        inds_keep = inds[keepy, keepx]
+        out = corners[:, inds_keep]
+        values = out[-1, :]
+        inds2 = np.argsort(-values)
+        out = out[:, inds2]
+        out_inds = inds1[inds_keep[inds2]]
+        return out, out_inds
 
-    # take one sample
-    for i, sample in tqdm(enumerate(test_loader)):
-        if i>1: break
-
-
-        val_agent.loadModel()
-        # points from heatmap
-        img = sample['image']
-        print("image: ", img.shape)
-
-        heatmap_batch = val_agent.run(img.to(device)) # heatmap: numpy [batch, 1, H, W]
-        # heatmap to pts 
-        pts = val_agent.heatmap_to_pts()
-        # print("pts: ", pts)
-        print("pts[0]: ", pts[0].shape)
-        print("pts: ", pts[0][:,:3])
-        
-        pts_subpixel = val_agent.soft_argmax_points(pts)
-        print("subpixels: ", pts_subpixel[0][:,:3])
-
-        # heatmap, pts to desc
-        desc_sparse = val_agent.desc_to_sparseDesc()
-        print("desc_sparse[0]: ", desc_sparse[0].shape)
-
-# pts, desc, _, heatmap
-
-
-
-
-
+    def sample_desc_from_points(self, coarse_desc, pts):
+        # --- Process descriptor.
+        H, W = coarse_desc.shape[2]*self.cell, coarse_desc.shape[3]*self.cell
+        D = coarse_desc.shape[1]
+        if pts.shape[1] == 0:
+            desc = np.zeros((D, 0))
+        else:
+            # Interpolate into descriptor map using 2D point locations.
+            samp_pts = torch.from_numpy(pts[:2, :].copy())
+            samp_pts[0, :] = (samp_pts[0, :] / (float(W) / 2.)) - 1.
+            samp_pts[1, :] = (samp_pts[1, :] / (float(H) / 2.)) - 1.
+            samp_pts = samp_pts.transpose(0, 1).contiguous()
+            samp_pts = samp_pts.view(1, 1, -1, 2)
+            samp_pts = samp_pts.float()
+            samp_pts = samp_pts.to(self.device)
+            desc = torch.nn.functional.grid_sample(coarse_desc, samp_pts, align_corners=True)
+            desc = desc.data.cpu().numpy().reshape(D, -1)
+            desc /= np.linalg.norm(desc, axis=0)[np.newaxis, :]
+        return desc

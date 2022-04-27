@@ -1,0 +1,8 @@
+/datasets
+/configs
+/logs
+/notebooks
+/.idea
+/__pycache__
+
+*.pyc
