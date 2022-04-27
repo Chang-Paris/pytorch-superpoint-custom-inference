@@ -57,7 +57,6 @@ class Val_model_heatmap(SuperPointFrontend_torch):
         self.patches = None
         pass
 
-
     def loadModel(self):
         # model = 'SuperPointNet'
         # params = self.config['model']['subpixel']['params']
@@ -70,19 +69,6 @@ class Val_model_heatmap(SuperPointFrontend_torch):
 
         self.net = self.net.to(self.device)
         logging.info('successfully load pretrained model from: %s', self.weights_path)
-        pass
-
-    def extract_patches(self, label_idx, img):
-        """
-        input: 
-            label_idx: tensor [N, 4]: (batch, 0, y, x)
-            img: tensor [batch, channel(1), H, W]
-        """
-        from utils.losses import extract_patches
-        patch_size = self.config['params']['patch_size']
-        patches = extract_patches(label_idx.to(self.device), img.to(self.device), 
-            patch_size=patch_size)
-        return patches
         pass
 
     def run(self, images):
@@ -117,36 +103,6 @@ class Val_model_heatmap(SuperPointFrontend_torch):
         pts_nms_batch = [self.getPtsFromHeatmap(h) for h in heatmap_np] # [batch, H, W]
         self.pts_nms_batch = pts_nms_batch
         return pts_nms_batch
-
-
-    # def soft_argmax_points(self):
-    #     """
-    #     # make sure you have points ahead
-    #     inputs:
-
-    #     """
-    #     # from utils.losses import extract_patches
-    #     from utils.losses import extract_patch_from_points
-
-    #     ##### check not take care of batch #####
-    #     print("not take care of batch! only take first element!")
-    #     pts = self.pts_nms_batch
-    #     pts = pts[0].transpose().copy()
-    #     patches = extract_patch_from_points(self.heatmap, pts, patch_size=5)
-    #     import torch
-    #     patches = np.stack(patches)
-    #     patches_torch = torch.tensor(patches, dtype=torch.float32).unsqueeze(0)
-    #     print("patches: ", patches_torch.shape)
-    #     print("pts: ", pts.shape)
-
-    #     dxdy = soft_argmax_2d(patches_torch)
-    #     print("dxdy: ", dxdy.shape)
-    #     points = pts
-    #     points[:,:2] += dxdy.numpy().squeeze()
-    #     self.pts_subpixel = [points.transpose().copy()]
-    #     return self.pts_subpixel.copy()
-    #     pass
-
 
     def desc_to_sparseDesc(self):
         # pts_nms_batch = [self.getPtsFromHeatmap(h) for h in heatmap_np]
@@ -186,12 +142,12 @@ if __name__ == '__main__':
         print("image: ", img.shape)
 
         heatmap_batch = val_agent.run(img.to(device)) # heatmap: numpy [batch, 1, H, W]
-        # heatmap to pts 
+        # heatmap to pts
         pts = val_agent.heatmap_to_pts()
         # print("pts: ", pts)
         print("pts[0]: ", pts[0].shape)
         print("pts: ", pts[0][:,:3])
-        
+
         pts_subpixel = val_agent.soft_argmax_points(pts)
         print("subpixels: ", pts_subpixel[0][:,:3])
 
