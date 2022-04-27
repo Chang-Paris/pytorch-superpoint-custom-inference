@@ -36,13 +36,6 @@ def inference_superpoint(config, output_dir, args):
     save_output = save_path / "../predictions"
     os.makedirs(save_output, exist_ok=True)
 
-    # model loading
-    from utils.loader import get_module
-    Val_model_heatmap = get_module("", config["front_end_model"])
-    ## load pretrained
-    val_agent = Val_model_heatmap(config["model"], device=device)
-    val_agent.loadModel()
-
     # data loading
     from utils.loader import dataLoader_test as dataLoader
     task = config["data"]["dataset"]
