@@ -77,20 +77,14 @@ class Val_model_heatmap(SuperPointFrontend_torch):
             images: tensor[batch(1), 1, H, W]
 
         """
-        from Train_model_heatmap import Train_model_heatmap
         from utils.var_dim import toNumpy
-        train_agent = Train_model_heatmap
 
         with torch.no_grad():
             outs = self.net(images)
         semi = outs['semi']
         self.outs = outs
 
-        channel = semi.shape[1]
-        if channel == 64:
-            heatmap = train_agent.flatten_64to1(semi, cell_size=self.cell_size)
-        elif channel == 65:
-            heatmap = flattenDetection(semi, tensor=True)
+        heatmap = flattenDetection(semi, tensor=True)
             
         heatmap_np = toNumpy(heatmap)
         self.heatmap = heatmap_np
