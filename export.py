@@ -45,8 +45,7 @@ def inference_superpoint(config, output_dir, args):
     datasize(test_loader, config, tag="test")
 
     # model loading
-    from utils.loader import get_module
-    Val_model_heatmap = get_module("", config["front_end_model"])
+    from Val_model_heatmap import Val_model_heatmap
     ## load pretrained
     val_agent = Val_model_heatmap(config["model"], device=device)
     val_agent.loadModel()
