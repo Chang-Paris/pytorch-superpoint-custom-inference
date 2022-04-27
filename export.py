@@ -53,8 +53,6 @@ def inference_superpoint(config, output_dir, args):
     task = config["data"]["dataset"]
     data = dataLoader(config, dataset=task)
     test_set, test_loader = data["test_set"], data["test_loader"]
-    from utils.print_tool import datasize
-    datasize(test_loader, config, tag="test")
 
     # model loading
     from Val_model_heatmap import Val_model_heatmap
