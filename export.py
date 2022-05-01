@@ -172,7 +172,7 @@ class customDataset(data.Dataset):
 
         # get files
         self.root = Path(self.config["root"])  # Path(KITTI_DATA_PATH)
-
+        """
         root_split_txt = self.config.get("root_split_txt", None)
         self.root_split_txt = Path(
             self.root if root_split_txt is None else root_split_txt
@@ -185,6 +185,7 @@ class customDataset(data.Dataset):
             (Path(self.root / folder), Path(self.root / folder ) ) \
                 for folder in open(scene_list_path)
         ]
+        """
         self.crawl_folders(sequence_length)
         self.compute_valid_mask = compute_valid_mask
         if self.config['preprocessing']['resize']:
@@ -192,34 +193,21 @@ class customDataset(data.Dataset):
 
     def crawl_folders(self, sequence_length):
         sequence_set = []
-        demi_length = sequence_length - 1
 
-        for (scene, scene_img_folder) in self.scenes:
+        for img_url in os.listdir(self.root):
             # intrinsics and imu_pose_matrixs are redundant for superpoint training
             intrinsics = np.eye(3)
+            full_url = os.path.join(self.root, img_url)
 
-            # get images
-            image_paths = list(scene_img_folder.iterdir())
-            names = [p.stem for p in image_paths]
-            imgs = [str(p) for p in image_paths]
+            sample = {
+                "intrinsics": intrinsics,
+                "imgs": [full_url],
+                "scene_name": "",
+                "name": [""],
+                "frame_ids": [0]
+            }
 
-            if len(imgs) < sequence_length:
-                continue
-
-            for i in range(0, len(imgs) - demi_length):
-                sample = {
-                    "intrinsics": intrinsics,
-                    "imgs": [imgs[i]],
-                    "scene_name": scene.name,
-                    "frame_ids": [i],
-                    "name": [names[i]],
-                }
-
-                if sample is not None:
-                    for j in range(1, demi_length + 1):
-                        sample["image"].append(imgs[i + j])
-                        sample["frame_ids"].append(i + j)
-                    sequence_set.append(sample)
+            sequence_set.append(sample)
         random.shuffle(sequence_set)
         self.samples = sequence_set
         logging.info("Finished crawl_folders for KITTI.")
