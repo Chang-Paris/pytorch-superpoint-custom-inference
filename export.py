@@ -272,7 +272,6 @@ class customDataset(data.Dataset):
 # define data loader here
 def dataLoader(config, dataset='', export_task='train'):
     logging.info(f"load dataset from : {dataset}")
-    from datasets.Kitti_inh import Kitti_inh as Dataset
     test_set = customDataset(
         export=True,
         task=export_task,
@@ -331,7 +330,7 @@ def inference_superpoint(config, output_dir, args):
 
             outs = {"pts": pts[0], "desc": desc_sparse[0]}
             return outs
-
+        print(img_0)
         outs = get_pts_desc_from_agent(val_agent, img_0, device=device)
         pts, desc = outs["pts"], outs["desc"]  # pts: np [3, N]
 
