@@ -93,7 +93,7 @@ model:
       num_masked_non_matches_per_match: 100
       num_matching_attempts: 600
       other_settings: train from pretrained, 2d method
-  pretrained: logs/superPointNet_90000_checkpoint.pth.tar
+  pretrained: pretrained/superPointNet_90000_checkpoint.pth.tar
 reset_iter: true
 retrain: false
 save_interval: 2000
