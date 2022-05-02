@@ -61,41 +61,18 @@ class customDataset(data.Dataset):
 
     def __init__(
         self,
-        export=False,
-        transform=None,
-        task="train",
-        seed=0,
-        sequence_length=1,
-        **config,
+        config,
     ):
         # Update config
         self.config = self.default_config
         self.config = dict_update(self.config, config)
+        self.root = Path(self.config["root"])
 
-        self.transforms = transform
-        self.action = "val"
-
-        # get files
-        self.root = Path(self.config["root"])  # Path(KITTI_DATA_PATH)
-        """
-        root_split_txt = self.config.get("root_split_txt", None)
-        self.root_split_txt = Path(
-            self.root if root_split_txt is None else root_split_txt
-        )
-        scene_list_path = (
-            self.root_split_txt / "val.txt"
-        )
-        self.scenes = [
-            # (label folder, raw image path)
-            (Path(self.root / folder), Path(self.root / folder ) ) \
-                for folder in open(scene_list_path)
-        ]
-        """
-        self.crawl_folders(sequence_length)
+        self.crawl_folders()
         if self.config['preprocessing']['resize']:
             self.sizer = self.config['preprocessing']['resize']
 
-    def crawl_folders(self, sequence_length):
+    def crawl_folders(self):
         sequence_set = []
 
         for img_url in os.listdir(self.root):
@@ -175,9 +152,7 @@ class customDataset(data.Dataset):
 def dataLoader(config, dataset='', export_task='train'):
     logging.info(f"load dataset from : {dataset}")
     test_set = customDataset(
-        export=True,
-        task=export_task,
-        **config['data'],
+        config['data'],
     )
     test_loader = torch.utils.data.DataLoader(
         test_set, batch_size=1, shuffle=False,
