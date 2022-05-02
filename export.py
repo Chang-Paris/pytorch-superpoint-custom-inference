@@ -40,18 +40,10 @@ def _read_image(path):
 
 @torch.no_grad()
 def inference_superpoint(config, output_dir, img_path, args):
-    from utils.loader import get_save_path
-    from utils.var_dim import squeezeToNumpy
-    print("output_dir")
-    print(output_dir)
 
     # basic settings
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     logging.info("Inference on device: %s", device)
-
-    save_path = get_save_path(output_dir)
-    save_output = save_path / "../predictions"
-    os.makedirs(save_output, exist_ok=True)
 
     # model loading
     from Val_model_heatmap import Val_model_heatmap
@@ -68,7 +60,7 @@ def inference_superpoint(config, output_dir, img_path, args):
         pts: list [numpy (3, N)]
         desc: list [numpy (256, N)]
         """
-        heatmap_batch = val_agent.run(
+        _ = val_agent.run(
             img.to(device)
         )  # heatmap: numpy [batch, 1, H, W]
         # heatmap to pts
@@ -84,10 +76,12 @@ def inference_superpoint(config, output_dir, img_path, args):
     pts, desc = outs["pts"], outs["desc"]  # pts: np [3, N]
 
     # save keypoints
-    pred = {"image": squeezeToNumpy(img_0)}
-    pred.update({"prob": pts.transpose(), "desc": desc.transpose()})
-    #img_path = "./datasets/kitti/2011_09_26_drive_0001_sync_02/0000000000.jpg"
+    pred = dict({"prob": pts.transpose(), "desc": desc.transpose()})
     filename = os.path.basename(img_path).split(".")[0]
+
+    save_output = os.path.join(output_dir,  "predictions")
+    os.makedirs(save_output, exist_ok=True)
+
     path = Path(save_output, "{}.npz".format(filename))
     np.savez_compressed(path, **pred)
 
